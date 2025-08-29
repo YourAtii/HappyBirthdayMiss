@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     html, body { margin: 0; padding: 0; height: 100%; background: #111; overflow: hidden; }
+    /* Canvas is sized via JS for HiDPI crispness */
     canvas { display: block; width: 100vw; height: 100vh; }
   </style>
 </head>
@@ -13,18 +14,35 @@
   <canvas id="c"></canvas>
 
   <script>
-  // ===== Canvas setup =====
+  // ===== Canvas + HiDPI setup =====
   const c = document.getElementById("c");
-  let w = (c.width = window.innerWidth),
-      h = (c.height = window.innerHeight),
-      ctx = c.getContext("2d"),
-      hw = w / 2,
-      hh = h / 2;
+  const ctx = c.getContext("2d", { alpha: false });
 
+  let cssW = window.innerWidth;
+  let cssH = window.innerHeight;
+  let dpr  = Math.max(1, Math.min(window.devicePixelRatio || 1, 2)); // cap for performance
+  function sizeCanvas() {
+    cssW = window.innerWidth;
+    cssH = window.innerHeight;
+    dpr  = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+    c.width  = Math.floor(cssW * dpr);
+    c.height = Math.floor(cssH * dpr);
+    // normalize drawing to CSS pixels
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    w = cssW; h = cssH; hw = w/2; hh = h/2;
+    ctx.font = opts.charSize + "px Verdana";
+  }
+
+  let w = cssW, h = cssH, hw = w/2, hh = h/2;
+
+  // ===== Options (text bigger + spacing) =====
   const opts = {
     strings: ["HAPPY", "BIRTHDAY!", "Miss"],
-    charSize: 30, charSpacing: 35, lineHeight: 40,
-    cx: w/2, cy: h/2,
+    charSize: 44,                 // bigger text
+    charSpacing: 44,
+    lineHeight: 56,
+    cx: cssW/2, cy: cssH/2,
+
     fireworkPrevPoints: 10, fireworkBaseLineWidth: 5, fireworkAddedLineWidth: 8,
     fireworkSpawnTime: 200, fireworkBaseReachTime: 30, fireworkAddedReachTime: 30,
     fireworkCircleBaseSize: 20, fireworkCircleAddedSize: 10,
@@ -35,52 +53,78 @@
     fireworkShardBaseSize: 3, fireworkShardAddedSize: 3,
     gravity: 0.1, upFlow: -0.1,
     letterContemplatingWaitTime: 360,
+
     balloonSpawnTime: 20, balloonBaseInflateTime: 10, balloonAddedInflateTime: 10,
     balloonBaseSize: 20, balloonAddedSize: 20,
     balloonBaseVel: 0.4, balloonAddedVel: 0.4,
     balloonBaseRadian: -(Math.PI/2 - 0.5), balloonAddedRadian: -1
   };
 
-  // ==== MOBILE SPEED-UP (≈35% faster feel) ====
-  const MOBILE = /Mobi|Android/i.test(navigator.userAgent);
-  if (MOBILE) {
-    const SPEED_UP = 1.70;
-    const fast = v => Math.max(1, (v / SPEED_UP) | 0); // timings chhote
+  // ===== Speed profile =====
+  // Laptop/Desktop ≈ +25% faster; Mobile ≈ 10% slower
+  const IS_MOBILE = /Mobi|Android/i.test(navigator.userAgent);
+  const speedFactor = IS_MOBILE ? 0.90 : 1.25;
 
-    opts.fireworkSpawnTime       = fast(opts.fireworkSpawnTime);
-    opts.fireworkBaseReachTime   = fast(opts.fireworkBaseReachTime);
-    opts.fireworkAddedReachTime  = fast(opts.fireworkAddedReachTime);
-    opts.fireworkCircleBaseTime  = fast(opts.fireworkCircleBaseTime);
-    opts.fireworkCircleAddedTime = fast(opts.fireworkCircleAddedTime);
-    opts.fireworkCircleFadeBaseTime  = fast(opts.fireworkCircleFadeBaseTime);
-    opts.fireworkCircleFadeAddedTime = fast(opts.fireworkCircleFadeAddedTime);
-    opts.letterContemplatingWaitTime = fast(opts.letterContemplatingWaitTime);
-    opts.balloonSpawnTime        = fast(opts.balloonSpawnTime);
-    opts.balloonBaseInflateTime  = fast(opts.balloonBaseInflateTime);
-    opts.balloonAddedInflateTime = fast(opts.balloonAddedInflateTime);
+  (function applySpeed(f) {
+    // Shorter times = faster, so divide by f
+    const timeKeys = [
+      "fireworkSpawnTime","fireworkBaseReachTime","fireworkAddedReachTime",
+      "fireworkCircleBaseTime","fireworkCircleAddedTime",
+      "fireworkCircleFadeBaseTime","fireworkCircleFadeAddedTime",
+      "letterContemplatingWaitTime",
+      "balloonSpawnTime","balloonBaseInflateTime","balloonAddedInflateTime"
+    ];
+    timeKeys.forEach(k => opts[k] = Math.max(1, Math.round(opts[k] / f)));
 
-    // movements zyada tezi se
-    opts.balloonBaseVel        *= SPEED_UP;
-    opts.balloonAddedVel       *= SPEED_UP;
-    opts.fireworkShardBaseVel  *= SPEED_UP;
-    opts.fireworkShardAddedVel *= SPEED_UP;
-    opts.gravity               *= SPEED_UP * 0.9; // thoda sa zyada pull, trails chhote
-  }
-  // ============================================
+    // Higher velocities/gravity = faster, so multiply by f
+    const velKeys = [
+      "balloonBaseVel","balloonAddedVel",
+      "fireworkShardBaseVel","fireworkShardAddedVel",
+      "gravity"
+    ];
+    velKeys.forEach(k => opts[k] *= f);
 
+    // Upflow should scale with f too
+    opts.upFlow *= f;
+  })(speedFactor);
+
+  // ===== Derived + misc =====
   const calc = { totalWidth: opts.charSpacing * Math.max(opts.strings[0].length, opts.strings[1].length) };
   const Tau = Math.PI * 2, TauQuarter = Tau / 4;
   const letters = [];
-  ctx.font = opts.charSize + "px Verdana";
 
-  // ===== Image settings (CLEAN CIRCULAR COVER) =====
+  // ===== Image (robust loading for GitHub Pages) =====
+  // Use same-folder "Mam.png" or replace with absolute URL.
   const img = new Image();
-  img.src = "Mam.png"; // apni file/URL
-  let t0 = performance.now();
-  let imgYBase = -190;        // move image up/down
-  let baseRadius = 90;        // base circle radius
+  // Uncomment the next line if you host the image on another origin:
+  // img.crossOrigin = "anonymous";
+  img.src = "Mam.png";
 
-  // ===== Letters / fireworks system =====
+  let sprite = null;
+  let imgReady = false;
+  let t0 = performance.now();
+  let imgYBase = -210;   // image vertical position
+  let baseRadius = 95;   // circle radius (slightly bigger to match bigger text)
+
+  // Decode -> ImageBitmap for smooth first draw
+  (async () => {
+    try {
+      if (img.decode) await img.decode();
+      const bmp = await createImageBitmap(img);
+      sprite = bmp; imgReady = true; t0 = performance.now();
+    } catch (e) {
+      // Fallbacks
+      img.onload = async () => {
+        try {
+          const bmp = await createImageBitmap(img);
+          sprite = bmp; imgReady = true; t0 = performance.now();
+        } catch { imgReady = true; } // draw raw <img> if bitmap fails
+      };
+      img.onerror = () => { imgReady = false; }; // no image
+    }
+  })();
+
+  // ===== Letter / Fireworks / Balloons with soft glow on text =====
   function Letter(char, x, y) {
     this.char = char; this.x = x; this.y = y;
     this.dx = -ctx.measureText(char).width / 2;
@@ -100,6 +144,16 @@
     this.lineWidth = opts.fireworkBaseLineWidth + opts.fireworkAddedLineWidth * Math.random();
     this.prevPoints = [[0, hh, 0]];
   };
+
+  function drawTextGlow(letter, x, y, glowStrength = 12) {
+    ctx.save();
+    ctx.shadowColor = letter.lightAlphaColor.replace("light", 100).replace("alp", 0.45);
+    ctx.shadowBlur = glowStrength;
+    ctx.fillStyle = letter.lightColor.replace("light", 75);
+    ctx.fillText(letter.char, x + letter.dx, y + letter.dy);
+    ctx.restore();
+  }
+
   Letter.prototype.step = function () {
     if (this.phase === "firework") {
       if (!this.spawned) {
@@ -155,8 +209,7 @@
         ctx.fill();
         if (this.tick2 > this.circleCompleteTime) { this.tick2 = 0; this.circleCreating = false; this.circleFading = true; }
       } else if (this.circleFading) {
-        ctx.fillStyle = this.lightColor.replace("light", 70);
-        ctx.fillText(this.char, this.x + this.dx, this.y + this.dy);
+        drawTextGlow(this, this.x, this.y, 14);
         ++this.tick2;
         let p = this.tick2 / this.circleFadeTime,
             a = -Math.cos(p * Math.PI) / 2 + 0.5;
@@ -166,8 +219,7 @@
         ctx.fill();
         if (this.tick2 >= this.circleFadeTime) this.circleFading = false;
       } else {
-        ctx.fillStyle = this.lightColor.replace("light", 70);
-        ctx.fillText(this.char, this.x + this.dx, this.y + this.dy);
+        drawTextGlow(this, this.x, this.y, 12);
       }
 
       for (let i = 0; i < this.shards.length; ++i) {
@@ -190,8 +242,7 @@
       ctx.strokeStyle = this.lightColor.replace("light", 80);
       if (this.spawning) {
         ++this.tick;
-        ctx.fillStyle = this.lightColor.replace("light", 70);
-        ctx.fillText(this.char, this.x + this.dx, this.y + this.dy);
+        drawTextGlow(this, this.x, this.y, 12);
         if (this.tick >= this.spawnTime) { this.tick = 0; this.spawning = false; this.inflating = true; }
       } else if (this.inflating) {
         ++this.tick;
@@ -199,16 +250,14 @@
         ctx.fillStyle = this.alphaColor.replace("alp", p);
         ctx.beginPath(); generateBalloonPath(x, y, this.size * p); ctx.fill();
         ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, this.y); ctx.stroke();
-        ctx.fillStyle = this.lightColor.replace("light", 70);
-        ctx.fillText(this.char, this.x + this.dx, this.y + this.dy);
+        drawTextGlow(this, this.x, this.y, 12);
         if (this.tick >= this.inflateTime) { this.tick = 0; this.inflating = false; }
       } else {
         this.cx += this.vx; this.cy += this.vy += opts.upFlow;
         ctx.fillStyle = this.color;
         ctx.beginPath(); generateBalloonPath(this.cx, this.cy, this.size); ctx.fill();
         ctx.beginPath(); ctx.moveTo(this.cx, this.cy); ctx.lineTo(this.cx, this.cy + this.size); ctx.stroke();
-        ctx.fillStyle = this.lightColor.replace("light", 70);
-        ctx.fillText(this.char, this.cx + this.dx, this.cy + this.dy + this.size);
+        drawTextGlow(this, this.cx, this.cy + this.size, 12);
         if (this.cy + this.size < -hh || this.cx < -hw || this.cy > hw) this.phase = "done";
       }
     }
@@ -254,9 +303,8 @@
     ctx.save();
     ctx.translate(hw, hh);
 
-    // ===== Clean circular image (no glow/ring) =====
-    if (img.complete && img.naturalWidth) {
-      // better edge quality
+    // Circular image (clipped), no glow/ring
+    if (imgReady) {
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
 
@@ -265,22 +313,24 @@
       const bobY       = 10 * Math.sin(t * 1.5);
       const r = baseRadius * scalePulse;
 
-      // circular clip ONLY (no fill behind)
       ctx.save();
       ctx.beginPath();
       ctx.arc(0, imgYBase + bobY, r, 0, Tau);
       ctx.closePath();
       ctx.clip();
 
-      const side = Math.min(img.naturalWidth, img.naturalHeight);
-      const sx = (img.naturalWidth  - side) / 2;
-      const sy = (img.naturalHeight - side) / 2;
-      const d  = r * 2;
-
-      ctx.drawImage(img, sx, sy, side, side, -r, imgYBase + bobY - r, d, d);
+      const source = sprite || img; // draw bitmap if ready, else the image element
+      const sw = source.naturalWidth || source.width || 0;
+      const sh = source.naturalHeight || source.height || 0;
+      if (sw && sh) {
+        const side = Math.min(sw, sh);
+        const sx = (sw - side) / 2;
+        const sy = (sh - side) / 2;
+        const d  = r * 2;
+        ctx.drawImage(source, sx, sy, side, side, -r, imgYBase + bobY - r, d, d);
+      }
       ctx.restore();
     }
-    // ===============================================
 
     // letters / fireworks / balloons
     let done = true;
@@ -288,34 +338,38 @@
       letters[l].step();
       if (letters[l].phase !== "done") done = false;
     }
-
     ctx.restore();
+
     if (done) for (let l = 0; l < letters.length; ++l) letters[l].reset();
   }
 
-  for (let i = 0; i < opts.strings.length; ++i) {
-    for (let j = 0; j < opts.strings[i].length; ++j) {
-      letters.push(
-        new Letter(
-          opts.strings[i][j],
-          j * opts.charSpacing + opts.charSpacing/2 - (opts.strings[i].length * opts.charSize) / 2,
-          i * opts.lineHeight + opts.lineHeight/2 - (opts.strings.length * opts.lineHeight) / 2
-        )
-      );
+  // Build letters
+  function buildLetters() {
+    letters.length = 0;
+    ctx.font = opts.charSize + "px Verdana";
+    for (let i = 0; i < opts.strings.length; ++i) {
+      const row = opts.strings[i];
+      for (let j = 0; j < row.length; ++j) {
+        letters.push(
+          new Letter(
+            row[j],
+            j * opts.charSpacing + opts.charSpacing/2 - (row.length * opts.charSpacing) / 2,
+            i * opts.lineHeight + opts.lineHeight/2 - (opts.strings.length * opts.lineHeight) / 2
+          )
+        );
+      }
     }
   }
 
+  sizeCanvas();
+  buildLetters();
   anim();
 
+  // Resize handling
   window.addEventListener("resize", () => {
-    w = c.width = window.innerWidth;
-    h = c.height = window.innerHeight;
-    hw = w / 2; hh = h / 2;
-    ctx.font = opts.charSize + "px Verdana";
-  });
+    sizeCanvas();
+    buildLetters(); // keep text centered and crisp
+  }, { passive: true });
   </script>
 </body>
 </html>
-
-
-
